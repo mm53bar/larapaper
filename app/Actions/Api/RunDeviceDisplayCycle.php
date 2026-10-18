@@ -208,9 +208,21 @@ class RunDeviceDisplayCycle
             }
         }
 
+        $cachedImage = $playlistItem->cachedMashupImage($device);
+        if ($cachedImage !== null) {
+            $device->update(['current_screen_image' => $cachedImage]);
+            $playlistItem->update(['last_displayed_at' => now()]);
+
+            return;
+        }
+
         try {
             $markup = $playlistItem->render(device: $device);
             GenerateScreenJob::dispatchSync($device->id, null, $markup);
+            $renderedImage = $device->refresh()->current_screen_image;
+            if ($renderedImage !== null) {
+                $playlistItem->rememberMashupImage($device, $renderedImage);
+            }
         } catch (Exception $e) {
             Log::error("Failed to render mashup playlist item {$playlistItem->id}: ".$e->getMessage());
             $firstPlugin = $plugins->first();

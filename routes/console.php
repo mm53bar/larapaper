@@ -16,3 +16,7 @@ Schedule::job(FirmwarePollJob::class)->daily();
 Schedule::job(CleanupDeviceLogsJob::class)->daily();
 Schedule::job(FetchDeviceModelsJob::class)->weekly();
 Schedule::job(NotifyDeviceBatteryLowJob::class)->dailyAt('10:00');
+
+if (config('services.trmnl.prerender_enabled')) {
+    Schedule::command('trmnl:screens:prerender')->everyMinute()->withoutOverlapping(15)->runInBackground();
+}

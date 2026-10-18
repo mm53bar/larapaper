@@ -129,6 +129,9 @@ php artisan db:seed --class=ExampleRecipesSeeder
 | `TRUSTED_PROXIES`             | If your server handles SSL termination, allow mixed mode. e.g. `"172.0.0.0/8"` or `*`                                                       | null              |
 | `PHP_OPCACHE_ENABLE`          | Enable PHP Opcache                                                                                                                          | 0                 |
 | `TRMNL_IMAGE_URL_TIMEOUT`     | How long TRMNL waits for a response on the display endpoint. (sec)                                                                          | 30                |
+| `TRMNL_PRERENDER_ENABLED`     | Refresh plugin data and render playlist screens in the background every minute, so devices get cached images                                | 0                 |
+| `TRMNL_PRERENDER_LEAD_MINUTES`| How many minutes before plugin data goes stale the background job refreshes it                                                              | 2                 |
+| `TRMNL_MASHUP_CACHE_MINUTES`  | How long a rendered mashup is reused when none of its plugins sets a stale time                                                             | 15                |
 | `HTTP_CLIENT_TIMEOUT`         | Outbound HTTP timeout when fetching recipe polling URLs. (sec)                                                                              | 10                |
 | `APP_TIMEZONE`                | Default timezone, which will be used by the PHP date functions. UTC is recommended.                                                         | UTC               |
 

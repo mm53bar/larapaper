@@ -6,6 +6,7 @@ use App\Enums\ImageFormat;
 use App\Models\Device;
 use App\Models\DeviceModel;
 use App\Models\DevicePalette;
+use App\Models\PlaylistItem;
 use App\Models\Plugin;
 use App\Models\User;
 use App\Plugins\Enums\PluginOutput;
@@ -37,18 +38,10 @@ class ImageGenerationService
      */
     private static function generateDeviceImage($deviceId, string $markup, ?Plugin $plugin = null): string
     {
-        $device = Device::with(['deviceModel', 'palette', 'deviceModel.palette', 'user'])->find($deviceId);
+        $device = Device::find($deviceId);
         $existingImageId = $device->current_screen_image;
 
-        $imageId = self::generateImageFromModel(
-            markup: $markup,
-            deviceModel: $device->deviceModel,
-            user: $device->user,
-            palette: $device->palette ?? $device->deviceModel?->palette,
-            device: $device,
-            plugin: $plugin,
-            existingImageId: $existingImageId,
-        );
+        $imageId = self::generateImageForDevice($device, $markup, $plugin, $existingImageId);
 
         if ($imageId !== $existingImageId) {
             $device->update(['current_screen_image' => $imageId]);
@@ -58,6 +51,24 @@ class ImageGenerationService
         }
 
         return $imageId;
+    }
+
+    /**
+     * Render markup for a device without changing what the device shows.
+     */
+    public static function generateImageForDevice(Device $device, string $markup, ?Plugin $plugin = null, ?string $existingImageId = null): string
+    {
+        $device->loadMissing(['deviceModel', 'palette', 'deviceModel.palette', 'user']);
+
+        return self::generateImageFromModel(
+            markup: $markup,
+            deviceModel: $device->deviceModel,
+            user: $device->user,
+            palette: $device->palette ?? $device->deviceModel?->palette,
+            device: $device,
+            plugin: $plugin,
+            existingImageId: $existingImageId,
+        );
     }
 
     /**
@@ -405,7 +416,8 @@ class ImageGenerationService
     {
         $activeDeviceImageUuids = Device::pluck('current_screen_image')->filter()->toArray();
         $activePluginImageUuids = Plugin::pluck('current_image')->filter()->toArray();
-        $activeImageUuids = array_merge($activeDeviceImageUuids, $activePluginImageUuids);
+        $activeMashupImageUuids = PlaylistItem::pluck('current_image')->filter()->toArray();
+        $activeImageUuids = array_merge($activeDeviceImageUuids, $activePluginImageUuids, $activeMashupImageUuids);
 
         $files = Storage::disk('public')->files('/images/generated/');
         foreach ($files as $file) {

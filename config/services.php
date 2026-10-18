@@ -44,6 +44,9 @@ return [
         'image_url_timeout' => env('TRMNL_IMAGE_URL_TIMEOUT', 30), // 30 seconds; increase on low-powered devices
         'liquid_enabled' => env('TRMNL_LIQUID_ENABLED', false),
         'liquid_path' => env('TRMNL_LIQUID_PATH', '/usr/local/bin/trmnl-liquid-cli'),
+        'prerender_enabled' => env('TRMNL_PRERENDER_ENABLED', false),
+        'prerender_lead_minutes' => env('TRMNL_PRERENDER_LEAD_MINUTES', 2),
+        'mashup_cache_minutes' => env('TRMNL_MASHUP_CACHE_MINUTES', 15),
     ],
 
     'webhook' => [

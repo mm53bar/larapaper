@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Services\ImageGenerationService;
 use Exception;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -13,9 +14,28 @@ class PlaylistItem extends Model
 
     protected $guarded = ['id'];
 
+    /** Plugin fields that change what a mashup looks like once rendered. */
+    private const array MASHUP_RENDER_FIELDS = [
+        'name',
+        'data_payload',
+        'configuration',
+        'render_markup',
+        'render_markup_half_horizontal',
+        'render_markup_half_vertical',
+        'render_markup_quadrant',
+        'render_markup_shared',
+        'render_markup_view',
+        'markup_language',
+        'no_bleed',
+        'dark_mode',
+        'preferred_renderer',
+        'framework_version',
+    ];
+
     protected $casts = [
         'is_active' => 'boolean',
         'last_displayed_at' => 'datetime',
+        'rendered_at' => 'datetime',
         'mashup' => 'json',
     ];
 
@@ -159,6 +179,58 @@ class PlaylistItem extends Model
     /**
      * Render all plugins with appropriate layout
      */
+    /**
+     * The cached mashup image for this device, if it still matches what a fresh
+     * render would produce and will stay current for at least $withinMinutes.
+     */
+    public function cachedMashupImage(Device $device, int $withinMinutes = 0): ?string
+    {
+        if ($this->current_image === null || $this->rendered_at === null) {
+            return null;
+        }
+
+        if ($this->rendered_at->addMinutes($this->mashupCacheMinutes() - $withinMinutes)->isPast()) {
+            return null;
+        }
+
+        return $this->render_fingerprint === $this->mashupRenderFingerprint($device) ? $this->current_image : null;
+    }
+
+    public function rememberMashupImage(Device $device, string $imageUuid): void
+    {
+        $this->update([
+            'current_image' => $imageUuid,
+            'render_fingerprint' => $this->mashupRenderFingerprint($device),
+            'rendered_at' => now(),
+        ]);
+    }
+
+    public function mashupRenderFingerprint(Device $device): string
+    {
+        $plugins = Plugin::whereIn('id', $this->getMashupPluginIds())->get()->keyBy('id');
+        $members = collect($this->getMashupPluginIds())
+            ->map(fn ($id) => $plugins->get((int) $id)?->only(self::MASHUP_RENDER_FIELDS));
+
+        return hash('sha256', json_encode([
+            $this->mashup,
+            $members,
+            ImageGenerationService::buildImageMetadataFromDevice($device),
+        ]));
+    }
+
+    /**
+     * A mashup is only as fresh as its most frequently refreshed member, and
+     * markup may depend on the date even when its data does not change.
+     */
+    private function mashupCacheMinutes(): int
+    {
+        $staleMinutes = Plugin::whereIn('id', $this->getMashupPluginIds())
+            ->pluck('data_stale_minutes')
+            ->filter(fn ($minutes) => $minutes > 0);
+
+        return (int) ($staleMinutes->min() ?? config('services.trmnl.mashup_cache_minutes', 15));
+    }
+
     public function render(?Device $device = null): string
     {
         if (! $this->isMashup()) {

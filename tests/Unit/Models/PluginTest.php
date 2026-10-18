@@ -1234,3 +1234,54 @@ test('updating current_image does not clear newly set current_image', function (
     expect($plugin->current_image)->toBe('new-image-uuid')
         ->and($plugin->current_image_metadata)->toBe(['width' => 800, 'height' => 480]);
 });
+
+test('changing request settings marks plugin data stale', function (string $field, mixed $value): void {
+    $plugin = Plugin::factory()->create([
+        'data_strategy' => 'polling',
+        'polling_url' => 'https://example.com/a',
+        'polling_verb' => 'get',
+        'data_stale_minutes' => 15,
+        'data_payload_updated_at' => now(),
+    ]);
+
+    $plugin->update([$field => $value]);
+
+    expect($plugin->fresh()->data_payload_updated_at)->toBeNull()
+        ->and($plugin->fresh()->isDataStale())->toBeTrue();
+})->with([
+    'polling url' => ['polling_url', 'https://example.com/b'],
+    'polling verb' => ['polling_verb', 'post'],
+    'polling header' => ['polling_header', 'Authorization: Bearer x'],
+    'polling body' => ['polling_body', '{"a":1}'],
+    'configuration' => ['configuration', ['city' => 'Edmonton']],
+]);
+
+test('storing fresh data with a settings change keeps the data fresh', function (): void {
+    $plugin = Plugin::factory()->create([
+        'data_strategy' => 'polling',
+        'polling_url' => 'https://example.com/a',
+        'data_stale_minutes' => 15,
+        'data_payload_updated_at' => now()->subHour(),
+    ]);
+
+    $plugin->update([
+        'configuration' => ['city' => 'Edmonton'],
+        'data_payload' => ['value' => 'new'],
+        'data_payload_updated_at' => now(),
+    ]);
+
+    expect($plugin->fresh()->isDataStale())->toBeFalse();
+});
+
+test('changing markup does not mark plugin data stale', function (): void {
+    $plugin = Plugin::factory()->create([
+        'data_strategy' => 'polling',
+        'polling_url' => 'https://example.com/a',
+        'data_stale_minutes' => 15,
+        'data_payload_updated_at' => now(),
+    ]);
+
+    $plugin->update(['render_markup' => '<div>changed</div>']);
+
+    expect($plugin->fresh()->data_payload_updated_at)->not->toBeNull();
+});

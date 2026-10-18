@@ -203,7 +203,7 @@ class RunDeviceDisplayCycle
 
         foreach ($plugins as $plugin) {
             ImageGenerationService::resetIfNotCacheable($plugin);
-            if ($plugin->isDataStale() || $plugin->current_image === null) {
+            if ($plugin->isDataStale()) {
                 $plugin->updateDataPayload();
             }
         }

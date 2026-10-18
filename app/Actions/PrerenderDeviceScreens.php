@@ -16,6 +16,9 @@ use Throwable;
  * Refresh data and render a device's active playlist items ahead of time, so
  * /api/display can answer from cache within the firmware's read timeout.
  * Never changes what the device is currently showing.
+ *
+ * All due data is fetched before any mashup is rendered: a member refreshed
+ * after its mashup was drawn would make that render outdated straight away.
  */
 class PrerenderDeviceScreens
 {
@@ -29,16 +32,31 @@ class PrerenderDeviceScreens
         }
 
         $leadMinutes = (int) config('services.trmnl.prerender_lead_minutes', 2);
+        [$mashups, $singles] = $this->activeItems($device)->partition(fn (PlaylistItem $item): bool => $item->isMashup());
+
+        $singlePlugins = $singles->map(fn (PlaylistItem $item) => $item->plugin)->filter()->unique('id');
+        $memberPlugins = Plugin::whereIn('id', $mashups->flatMap(fn (PlaylistItem $item) => $item->getMashupPluginIds())->unique())
+            ->whereNotIn('id', $singlePlugins->pluck('id'))
+            ->get();
+
         $rendered = 0;
 
-        foreach ($this->activeItems($device) as $item) {
-            try {
-                $rendered += $item->isMashup()
-                    ? $this->prerenderMashup($device, $item, $leadMinutes)
-                    : $this->prerenderPlugin($device, $item, $leadMinutes);
-            } catch (Throwable $e) {
-                Log::warning("Prerender failed for playlist item {$item->id}: ".$e->getMessage());
-            }
+        foreach ($singlePlugins as $plugin) {
+            $rendered += $this->attempt("plugin {$plugin->id}", fn (): int => $this->prerenderPlugin($device, $plugin, $leadMinutes));
+        }
+
+        foreach ($memberPlugins as $plugin) {
+            $this->attempt("plugin {$plugin->id}", function () use ($plugin, $leadMinutes): int {
+                if ($this->isDue($plugin, $leadMinutes)) {
+                    $plugin->updateDataPayload();
+                }
+
+                return 0;
+            });
+        }
+
+        foreach ($mashups as $item) {
+            $rendered += $this->attempt("playlist item {$item->id}", fn (): int => $this->prerenderMashup($device, $item, $leadMinutes));
         }
 
         return $rendered;
@@ -53,44 +71,53 @@ class PrerenderDeviceScreens
             ->where('is_active', true)
             ->get()
             ->filter(fn (Playlist $playlist): bool => $playlist->isActiveNow())
-            ->flatMap(fn (Playlist $playlist) => $playlist->items()->where('is_active', true)->get());
+            ->flatMap(fn (Playlist $playlist) => $playlist->items()->where('is_active', true)->get())
+            ->values();
     }
 
-    private function prerenderPlugin(Device $device, PlaylistItem $item, int $leadMinutes): int
+    /**
+     * Fetch, render and store a single plugin's data and image in one save, so the
+     * plugin never sits without an image while it is re-rendered.
+     */
+    private function prerenderPlugin(Device $device, Plugin $plugin, int $leadMinutes): int
     {
-        $plugin = $item->plugin;
-        if (! $plugin || in_array($plugin->handler()?->output(), [PluginOutput::ProcessedImage, PluginOutput::Image], true)) {
+        if (in_array($plugin->handler()?->output(), [PluginOutput::ProcessedImage, PluginOutput::Image], true)) {
             return 0;
         }
-
-        $refreshed = $this->refreshIfDue($plugin, $leadMinutes);
 
         ImageGenerationService::resetIfNotCacheable($plugin, $device);
         $plugin->refresh();
 
-        if (! $refreshed && $plugin->current_image !== null) {
+        $payload = $this->isDue($plugin, $leadMinutes) ? $plugin->fetchDataPayload() : null;
+        $rerender = $payload !== null
+            || $plugin->current_image === null
+            || ($plugin->data_strategy !== 'polling' && $this->isDue($plugin, $leadMinutes, staticToo: true));
+
+        if (! $rerender) {
             return 0;
+        }
+
+        if ($payload !== null) {
+            $plugin->data_payload = $payload;
         }
 
         if (($plugin->data_payload['TRMNL_SKIP_DISPLAY'] ?? false) === true) {
+            $plugin->forceFill(['data_payload_updated_at' => now()])->save();
+
             return 0;
         }
 
-        $imageUuid = ImageGenerationService::generateImageForDevice($device, $plugin->render(device: $device), $plugin, $plugin->current_image);
-        $plugin->update([
-            'current_image' => $imageUuid,
+        $plugin->forceFill([
+            'data_payload_updated_at' => now(),
+            'current_image' => ImageGenerationService::generateImageForDevice($device, $plugin->render(device: $device), $plugin),
             'current_image_metadata' => ImageGenerationService::buildImageMetadataFromDevice($device),
-        ]);
+        ])->save();
 
         return 1;
     }
 
     private function prerenderMashup(Device $device, PlaylistItem $item, int $leadMinutes): int
     {
-        foreach (Plugin::whereIn('id', $item->getMashupPluginIds())->get() as $plugin) {
-            $this->refreshIfDue($plugin, $leadMinutes);
-        }
-
         if ($item->cachedMashupImage($device, $leadMinutes) !== null) {
             return 0;
         }
@@ -102,22 +129,34 @@ class PrerenderDeviceScreens
     }
 
     /**
-     * Fetch polled data shortly before it would go stale, so requests never have to.
+     * Whether the plugin's data goes stale within $leadMinutes. Static plugins
+     * have no data to fetch, but with $staticToo they are re-rendered on the same
+     * clock so date-dependent markup stays current.
      */
-    private function refreshIfDue(Plugin $plugin, int $leadMinutes): bool
+    private function isDue(Plugin $plugin, int $leadMinutes, bool $staticToo = false): bool
     {
-        if ($plugin->data_strategy !== 'polling' || ! $plugin->polling_url || ! $plugin->data_stale_minutes) {
+        $polls = $plugin->data_strategy === 'polling' && $plugin->polling_url;
+        if (! $polls && ! $staticToo) {
             return false;
         }
 
-        $dueAt = $plugin->data_payload_updated_at?->addMinutes(max(0, $plugin->data_stale_minutes - $leadMinutes));
-        if ($dueAt !== null && $dueAt->isFuture()) {
+        $staleMinutes = $plugin->data_stale_minutes ?: ($polls ? null : (int) config('services.trmnl.mashup_cache_minutes', 15));
+        if (! $staleMinutes) {
             return false;
         }
 
-        $plugin->updateDataPayload();
-        $plugin->refresh();
+        return $plugin->data_payload_updated_at === null
+            || $plugin->data_payload_updated_at->addMinutes(max(0, $staleMinutes - $leadMinutes))->isPast();
+    }
 
-        return true;
+    private function attempt(string $what, callable $work): int
+    {
+        try {
+            return $work();
+        } catch (Throwable $e) {
+            Log::warning("Prerender failed for {$what}: ".$e->getMessage());
+
+            return 0;
+        }
     }
 }

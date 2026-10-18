@@ -174,3 +174,89 @@ test('prerender skips mirrored devices', function (): void {
 
     expect($item->fresh()->current_image)->toBeNull();
 });
+
+test('with prerendering on, display serves an outdated mashup image instead of rendering', function (): void {
+    Http::fake(['example.com/*' => Http::response(['value' => 'fetched'])]);
+    config(['services.trmnl.prerender_enabled' => true]);
+
+    $device = prerenderDevice();
+    $polled = prerenderPlugin(['data_strategy' => 'polling', 'polling_url' => 'https://example.com/a', 'polling_verb' => 'get', 'data_payload_updated_at' => now()->subMinutes(20)]);
+    $item = PlaylistItem::createMashup(prerenderPlaylist($device), '1Lx1R', [$polled->id, prerenderPlugin()->id], 'Mashup', 1);
+    Storage::disk('public')->put('images/generated/cached-mashup.png', 'png');
+    $item->rememberMashupImage($device, 'cached-mashup');
+    $polled->update(['data_payload' => ['value' => 'changed since render']]);
+
+    requestDisplay($device);
+
+    Http::assertNothingSent();
+    expect($device->fresh()->current_screen_image)->toBe('cached-mashup');
+});
+
+test('with prerendering on, display still re-renders a mashup cached for another screen format', function (): void {
+    config(['services.trmnl.prerender_enabled' => true]);
+
+    $device = prerenderDevice();
+    $item = PlaylistItem::createMashup(prerenderPlaylist($device), '1Lx1R', [prerenderPlugin()->id, prerenderPlugin()->id], 'Mashup', 1);
+    $item->rememberMashupImage($device, 'cached-mashup');
+    $item->update(['render_fingerprint' => 'other-format:'.explode(':', $item->render_fingerprint)[1]]);
+
+    requestDisplay($device);
+
+    expect($device->fresh()->current_screen_image)->not->toBe('cached-mashup');
+});
+
+test('with prerendering on, display serves a single plugin image without refetching recently stale data', function (): void {
+    Http::fake(['example.com/*' => Http::response(['value' => 'fetched'])]);
+    config(['services.trmnl.prerender_enabled' => true]);
+
+    $device = prerenderDevice();
+    $plugin = prerenderPlugin(['data_strategy' => 'polling', 'polling_url' => 'https://example.com/a', 'polling_verb' => 'get']);
+    $plugin->forceFill([
+        'current_image' => 'cached-plugin',
+        'current_image_metadata' => ImageGenerationService::buildImageMetadataFromDevice($device),
+        'data_payload_updated_at' => now()->subMinutes(20),
+    ])->save();
+    Storage::disk('public')->put('images/generated/cached-plugin.png', 'png');
+    PlaylistItem::factory()->create(['playlist_id' => prerenderPlaylist($device)->id, 'plugin_id' => $plugin->id, 'is_active' => true, 'mashup' => null]);
+
+    requestDisplay($device);
+
+    Http::assertNothingSent();
+    expect($device->fresh()->current_screen_image)->toBe('cached-plugin');
+});
+
+test('prerender stores refreshed data and the new image together', function (): void {
+    Http::fake(['example.com/*' => Http::response(['value' => 'fetched'])]);
+
+    $device = prerenderDevice();
+    $plugin = prerenderPlugin(['data_strategy' => 'polling', 'polling_url' => 'https://example.com/a', 'polling_verb' => 'get']);
+    $plugin->forceFill([
+        'current_image' => 'old-image',
+        'current_image_metadata' => ImageGenerationService::buildImageMetadataFromDevice($device),
+        'data_payload_updated_at' => now()->subMinutes(14),
+    ])->save();
+    PlaylistItem::factory()->create(['playlist_id' => prerenderPlaylist($device)->id, 'plugin_id' => $plugin->id, 'is_active' => true, 'mashup' => null]);
+
+    $this->artisan('trmnl:screens:prerender')->assertSuccessful();
+
+    $plugin->refresh();
+    expect($plugin->data_payload)->toBe(['value' => 'fetched'])
+        ->and($plugin->current_image)->not->toBeNull()
+        ->and($plugin->current_image)->not->toBe('old-image');
+});
+
+test('prerender fetches every due plugin before rendering mashups that share it', function (): void {
+    Http::fake(['example.com/*' => Http::response(['value' => 'fetched'])]);
+
+    $device = prerenderDevice();
+    $playlist = prerenderPlaylist($device);
+    $shared = prerenderPlugin(['data_strategy' => 'polling', 'polling_url' => 'https://example.com/shared', 'polling_verb' => 'get', 'data_payload_updated_at' => now()->subMinutes(14)]);
+    $first = PlaylistItem::createMashup($playlist, '1Lx1R', [prerenderPlugin()->id, $shared->id], 'First', 1);
+    $second = PlaylistItem::createMashup($playlist, '1Lx1R', [$shared->id, prerenderPlugin()->id], 'Second', 2);
+
+    $this->artisan('trmnl:screens:prerender')->assertSuccessful();
+
+    Http::assertSentCount(1);
+    expect($first->fresh()->cachedMashupImage($device->fresh()))->not->toBeNull()
+        ->and($second->fresh()->cachedMashupImage($device->fresh()))->not->toBeNull();
+});

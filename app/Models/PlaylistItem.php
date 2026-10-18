@@ -182,18 +182,28 @@ class PlaylistItem extends Model
     /**
      * The cached mashup image for this device, if it still matches what a fresh
      * render would produce and will stay current for at least $withinMinutes.
+     *
+     * With $allowOutdated, an image of the right format is returned even when its
+     * plugins have changed since, for up to twice the usual age, so a background
+     * re-render can replace it without the device waiting on one.
      */
-    public function cachedMashupImage(Device $device, int $withinMinutes = 0): ?string
+    public function cachedMashupImage(Device $device, int $withinMinutes = 0, bool $allowOutdated = false): ?string
     {
-        if ($this->current_image === null || $this->rendered_at === null) {
+        if ($this->current_image === null || $this->rendered_at === null || $this->render_fingerprint === null) {
             return null;
         }
 
-        if ($this->rendered_at->addMinutes($this->mashupCacheMinutes() - $withinMinutes)->isPast()) {
+        $maxAge = $this->mashupCacheMinutes() * ($allowOutdated ? 2 : 1);
+        if ($this->rendered_at->addMinutes($maxAge - $withinMinutes)->isPast()) {
             return null;
         }
 
-        return $this->render_fingerprint === $this->mashupRenderFingerprint($device) ? $this->current_image : null;
+        [$format, $content] = array_pad(explode(':', $this->render_fingerprint, 2), 2, null);
+        if ($format !== $this->mashupFormatHash($device)) {
+            return null;
+        }
+
+        return $allowOutdated || $content === $this->mashupContentHash() ? $this->current_image : null;
     }
 
     public function rememberMashupImage(Device $device, string $imageUuid): void
@@ -207,15 +217,21 @@ class PlaylistItem extends Model
 
     public function mashupRenderFingerprint(Device $device): string
     {
+        return $this->mashupFormatHash($device).':'.$this->mashupContentHash();
+    }
+
+    private function mashupFormatHash(Device $device): string
+    {
+        return sha1(json_encode(ImageGenerationService::buildImageMetadataFromDevice($device)));
+    }
+
+    private function mashupContentHash(): string
+    {
         $plugins = Plugin::whereIn('id', $this->getMashupPluginIds())->get()->keyBy('id');
         $members = collect($this->getMashupPluginIds())
             ->map(fn ($id) => $plugins->get((int) $id)?->only(self::MASHUP_RENDER_FIELDS));
 
-        return hash('sha256', json_encode([
-            $this->mashup,
-            $members,
-            ImageGenerationService::buildImageMetadataFromDevice($device),
-        ]));
+        return sha1(json_encode([$this->mashup, $members]));
     }
 
     /**

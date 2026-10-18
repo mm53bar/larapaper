@@ -1285,3 +1285,32 @@ test('changing markup does not mark plugin data stale', function (): void {
 
     expect($plugin->fresh()->data_payload_updated_at)->not->toBeNull();
 });
+
+test('fetching data does not save it', function (): void {
+    Http::fake(['example.com/*' => Http::response(['value' => 'fetched'])]);
+    $plugin = Plugin::factory()->create([
+        'data_strategy' => 'polling',
+        'polling_url' => 'https://example.com/a',
+        'polling_verb' => 'get',
+        'data_payload' => ['value' => 'stored'],
+    ]);
+
+    expect($plugin->fetchDataPayload())->toBe(['value' => 'fetched'])
+        ->and($plugin->fresh()->data_payload)->toBe(['value' => 'stored']);
+});
+
+test('saving new data together with a new image keeps the image', function (): void {
+    $plugin = Plugin::factory()->create(['current_image' => 'old-image', 'data_payload' => ['value' => 'old']]);
+
+    $plugin->update(['data_payload' => ['value' => 'new'], 'current_image' => 'new-image']);
+
+    expect($plugin->fresh()->current_image)->toBe('new-image');
+});
+
+test('saving new data alone still clears the image', function (): void {
+    $plugin = Plugin::factory()->create(['current_image' => 'old-image', 'data_payload' => ['value' => 'old']]);
+
+    $plugin->update(['data_payload' => ['value' => 'new']]);
+
+    expect($plugin->fresh()->current_image)->toBeNull();
+});

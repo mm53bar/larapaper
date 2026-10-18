@@ -141,7 +141,7 @@ class RunDeviceDisplayCycle
         ImageGenerationService::resetIfNotCacheable($plugin, $device);
         $plugin->refresh();
 
-        $isDataStale = $plugin->isDataStale();
+        $isDataStale = ! $this->prerenderedImageUsable($plugin) && $plugin->isDataStale();
 
         if ($isDataStale) {
             $plugin->updateDataPayload();
@@ -199,6 +199,11 @@ class RunDeviceDisplayCycle
 
     private function renderMashup(Device $device, PlaylistItem $playlistItem): void
     {
+        if (config('services.trmnl.prerender_enabled')
+            && $this->serveCachedMashup($device, $playlistItem, $playlistItem->cachedMashupImage($device, allowOutdated: true))) {
+            return;
+        }
+
         $plugins = Plugin::whereIn('id', $playlistItem->getMashupPluginIds())->get();
 
         foreach ($plugins as $plugin) {
@@ -208,11 +213,7 @@ class RunDeviceDisplayCycle
             }
         }
 
-        $cachedImage = $playlistItem->cachedMashupImage($device);
-        if ($cachedImage !== null) {
-            $device->update(['current_screen_image' => $cachedImage]);
-            $playlistItem->update(['last_displayed_at' => now()]);
-
+        if ($this->serveCachedMashup($device, $playlistItem, $playlistItem->cachedMashupImage($device))) {
             return;
         }
 
@@ -236,6 +237,33 @@ class RunDeviceDisplayCycle
         if ($device->current_screen_image !== null) {
             $playlistItem->update(['last_displayed_at' => now()]);
         }
+    }
+
+    private function serveCachedMashup(Device $device, PlaylistItem $playlistItem, ?string $cachedImage): bool
+    {
+        if ($cachedImage === null) {
+            return false;
+        }
+
+        $device->update(['current_screen_image' => $cachedImage]);
+        $playlistItem->update(['last_displayed_at' => now()]);
+
+        return true;
+    }
+
+    /**
+     * With background prerendering, a plugin's existing image is served while its
+     * data is less than twice its stale time old; the prerender job replaces it.
+     */
+    private function prerenderedImageUsable(Plugin $plugin): bool
+    {
+        if (! config('services.trmnl.prerender_enabled') || $plugin->current_image === null || ! $plugin->data_payload_updated_at) {
+            return false;
+        }
+
+        $staleMinutes = $plugin->data_stale_minutes ?: (int) config('services.trmnl.mashup_cache_minutes', 15);
+
+        return $plugin->data_payload_updated_at->addMinutes($staleMinutes * 2)->isFuture();
     }
 
     private function shouldSkipFromPayload(Plugin $plugin): bool

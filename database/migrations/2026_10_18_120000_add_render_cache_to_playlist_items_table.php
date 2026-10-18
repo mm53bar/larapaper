@@ -10,7 +10,7 @@ return new class extends Migration
     {
         Schema::table('playlist_items', function (Blueprint $table) {
             $table->string('current_image')->nullable();
-            $table->string('render_fingerprint', 64)->nullable();
+            $table->string('render_fingerprint', 100)->nullable();
             $table->timestamp('rendered_at')->nullable();
         });
     }

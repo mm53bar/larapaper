@@ -70,7 +70,7 @@ class Plugin extends Model
         });
 
         static::updating(function ($model): void {
-            // Reset image cache when any markup or render-affecting settings change
+            // Reset image cache when any markup or render-affecting settings change, unless this save stores a new image
             if ($model->isDirty([
                 'render_markup',
                 'render_markup_half_horizontal',
@@ -92,7 +92,7 @@ class Plugin extends Model
                 'preferred_renderer',
                 'framework_version',
                 'transform_language',
-            ])) {
+            ]) && ! $model->isDirty('current_image')) {
                 $model->current_image = null;
                 $model->current_image_metadata = null;
             }
@@ -490,8 +490,25 @@ class Plugin extends Model
 
     public function updateDataPayload(): void
     {
-        if ($this->data_strategy !== 'polling' || ! $this->polling_url) {
+        $payload = $this->fetchDataPayload();
+        if ($payload === null) {
             return;
+        }
+
+        $this->update([
+            'data_payload' => $payload,
+            'data_payload_updated_at' => now(),
+        ]);
+    }
+
+    /**
+     * Poll the plugin's URLs and return the combined payload without saving it.
+     * Null when the plugin does not poll.
+     */
+    public function fetchDataPayload(): ?array
+    {
+        if ($this->data_strategy !== 'polling' || ! $this->polling_url) {
+            return null;
         }
         $headers = ['User-Agent' => 'usetrmnl/larapaper', 'Accept' => 'application/json'];
 
@@ -565,10 +582,7 @@ class Plugin extends Model
             $finalPayload = self::oversizedDataPayloadErrorPayload();
         }
 
-        $this->update([
-            'data_payload' => $finalPayload,
-            'data_payload_updated_at' => now(),
-        ]);
+        return $finalPayload;
     }
 
     private function parseResponse(Response $httpResponse): array

@@ -206,13 +206,32 @@ class PlaylistItem extends Model
         return $allowOutdated || $content === $this->mashupContentHash() ? $this->current_image : null;
     }
 
+    /**
+     * Store the rendered image on this item and on any identical mashup in the same
+     * playlist, so a mashup that appears more than once is only rendered once.
+     */
     public function rememberMashupImage(Device $device, string $imageUuid): void
     {
-        $this->update([
+        $cache = [
             'current_image' => $imageUuid,
             'render_fingerprint' => $this->mashupRenderFingerprint($device),
             'rendered_at' => now(),
-        ]);
+        ];
+
+        $this->update($cache);
+
+        self::where('playlist_id', $this->playlist_id)
+            ->whereKeyNot($this->getKey())
+            ->whereNotNull('mashup')
+            ->get()
+            ->filter(fn (self $item): bool => $item->sameMashupAs($this))
+            ->each(fn (self $item) => $item->update($cache));
+    }
+
+    public function sameMashupAs(self $other): bool
+    {
+        return $this->getMashupLayoutType() === $other->getMashupLayoutType()
+            && array_map(intval(...), $this->getMashupPluginIds()) === array_map(intval(...), $other->getMashupPluginIds());
     }
 
     public function mashupRenderFingerprint(Device $device): string
@@ -231,7 +250,7 @@ class PlaylistItem extends Model
         $members = collect($this->getMashupPluginIds())
             ->map(fn ($id) => $plugins->get((int) $id)?->only(self::MASHUP_RENDER_FIELDS));
 
-        return sha1(json_encode([$this->mashup, $members]));
+        return sha1(json_encode([$this->getMashupLayoutType(), array_map(intval(...), $this->getMashupPluginIds()), $members]));
     }
 
     /**

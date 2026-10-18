@@ -118,6 +118,8 @@ class PrerenderDeviceScreens
 
     private function prerenderMashup(Device $device, PlaylistItem $item, int $leadMinutes): int
     {
+        $item->refresh();
+
         if ($item->cachedMashupImage($device, $leadMinutes) !== null) {
             return 0;
         }

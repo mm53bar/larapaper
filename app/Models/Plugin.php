@@ -96,6 +96,18 @@ class Plugin extends Model
                 $model->current_image = null;
                 $model->current_image_metadata = null;
             }
+
+            // Mark data stale when its request settings change, unless this save stores fresh data
+            if ($model->isDirty([
+                'configuration',
+                'data_strategy',
+                'polling_url',
+                'polling_verb',
+                'polling_header',
+                'polling_body',
+            ]) && ! $model->isDirty('data_payload_updated_at')) {
+                $model->data_payload_updated_at = null;
+            }
         });
 
         // Sanitize configuration template on save

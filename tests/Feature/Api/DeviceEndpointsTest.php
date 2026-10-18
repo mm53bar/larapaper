@@ -1990,6 +1990,83 @@ test('display endpoint handles plugin rendering errors gracefully', function ():
     expect($device->current_screen_image)->toBeString();
 });
 
+test('display endpoint does not refetch fresh data for mashup plugins without a cached image', function (): void {
+    Http::fake(['example.com/*' => Http::response(['value' => 'fetched'])]);
+
+    $device = Device::factory()->create([
+        'mac_address' => '00:11:22:33:44:55',
+        'api_key' => 'test-api-key',
+        'proxy_cloud' => false,
+    ]);
+    $playlist = Playlist::factory()->create([
+        'device_id' => $device->id,
+        'is_active' => true,
+        'weekdays' => null,
+        'active_from' => null,
+        'active_until' => null,
+    ]);
+
+    $plugins = collect([1, 2])->map(fn (int $n) => Plugin::factory()->create([
+        'name' => "Plugin {$n}",
+        'data_strategy' => 'polling',
+        'polling_url' => "https://example.com/{$n}",
+        'data_stale_minutes' => 15,
+        'data_payload' => ['value' => 'cached'],
+        'data_payload_updated_at' => now()->subMinutes(5),
+        'current_image' => null,
+        'render_markup_view' => 'trmnl',
+    ]));
+
+    $playlistItem = PlaylistItem::createMashup($playlist, '1Lx1R', $plugins->pluck('id')->all(), 'Fresh Mashup', 1);
+
+    $this->withHeaders([
+        'id' => $device->mac_address,
+        'access-token' => $device->api_key,
+        'fw-version' => '1.0.0',
+    ])->get('/api/display')->assertOk();
+
+    expect($playlistItem->fresh()->last_displayed_at)->not->toBeNull();
+    Http::assertNothingSent();
+});
+
+test('display endpoint refetches stale data for mashup plugins', function (): void {
+    Http::fake(['example.com/*' => Http::response(['value' => 'fetched'])]);
+
+    $device = Device::factory()->create([
+        'mac_address' => '00:11:22:33:44:55',
+        'api_key' => 'test-api-key',
+        'proxy_cloud' => false,
+    ]);
+    $playlist = Playlist::factory()->create([
+        'device_id' => $device->id,
+        'is_active' => true,
+        'weekdays' => null,
+        'active_from' => null,
+        'active_until' => null,
+    ]);
+
+    $plugins = collect([1, 2])->map(fn (int $n) => Plugin::factory()->create([
+        'name' => "Plugin {$n}",
+        'data_strategy' => 'polling',
+        'polling_url' => "https://example.com/{$n}",
+        'data_stale_minutes' => 15,
+        'data_payload' => ['value' => 'cached'],
+        'data_payload_updated_at' => now()->subMinutes(30),
+        'render_markup_view' => 'trmnl',
+    ]));
+
+    PlaylistItem::createMashup($playlist, '1Lx1R', $plugins->pluck('id')->all(), 'Stale Mashup', 1);
+
+    $this->withHeaders([
+        'id' => $device->mac_address,
+        'access-token' => $device->api_key,
+        'fw-version' => '1.0.0',
+    ])->get('/api/display')->assertOk();
+
+    Http::assertSentCount(2);
+    expect($plugins->first()->fresh()->data_payload)->toBe(['value' => 'fetched']);
+});
+
 test('display endpoint handles mashup rendering errors gracefully', function (): void {
     EpaperPipeline::fake();
 

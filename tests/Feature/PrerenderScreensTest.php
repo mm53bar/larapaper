@@ -260,3 +260,18 @@ test('prerender fetches every due plugin before rendering mashups that share it'
     expect($first->fresh()->cachedMashupImage($device->fresh()))->not->toBeNull()
         ->and($second->fresh()->cachedMashupImage($device->fresh()))->not->toBeNull();
 });
+
+test('a mashup that appears twice in a playlist is rendered once', function (): void {
+    $device = prerenderDevice();
+    $playlist = prerenderPlaylist($device);
+    $ids = [prerenderPlugin()->id, prerenderPlugin()->id];
+    $first = PlaylistItem::createMashup($playlist, '1Lx1R', $ids, 'Twice', 1);
+    $second = PlaylistItem::createMashup($playlist, '1Lx1R', $ids, 'Twice again', 2);
+    $other = PlaylistItem::createMashup($playlist, '1Lx1R', array_reverse($ids), 'Different order', 3);
+
+    $this->artisan('trmnl:screens:prerender')->expectsOutputToContain('Prerendered 2 screen(s)');
+
+    expect($second->fresh()->current_image)->toBe($first->fresh()->current_image)
+        ->and($second->fresh()->cachedMashupImage($device->fresh()))->not->toBeNull()
+        ->and($other->fresh()->current_image)->not->toBe($first->fresh()->current_image);
+});
